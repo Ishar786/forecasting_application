@@ -1,5 +1,7 @@
 
 import warnings
+import re
+
 warnings.filterwarnings("ignore")
 
 import numpy as np
@@ -24,53 +26,79 @@ st.set_page_config(
 
 st.title("📊 Payments Indicator Forecasting Engine")
 st.write(
-    "Compare forecasting methods, evaluate historical accuracy, "
-    "identify unusual trends, and choose a working estimate."
+    "Analyze historical payments indicators, compare forecasting "
+    "models, identify unusual trends, and select a working estimate."
 )
 
 st.info(
-    "Use forecasts as decision-support estimates. Verify them against "
-    "secondary research and market developments before adopting them."
+    "Forecasts are estimates, not verified facts. Validate results "
+    "against secondary research and market developments."
 )
 
 
 # =========================================================
-# SAMPLE DATA
+# SAMPLE DATA — HORIZONTAL FORMAT
 # =========================================================
 
 def get_sample_data():
     return pd.DataFrame({
-        "Year": list(range(2016, 2026)),
-        "Value": [
-            5.8, 6.1, 6.6, 7.0, 7.4,
-            8.2, 8.7, 9.1, 9.65, 10.2
-        ]
+        "Indicator": [
+            "Debit cards",
+            "Credit cards",
+            "POS terminals"
+        ],
+        "Units": ["000s", "000s", "000s"],
+        2020: [215.4463, 120.2, 45.1],
+        2021: [279.6480, 128.5, 49.3],
+        2022: [281.5387, 140.3, 52.8],
+        2023: [310.3870, 151.2, 58.2],
+        2024: [312.0795, 165.8, 62.5],
+        2025: [345.3122, 180.4, 69.1]
     })
 
 
 # =========================================================
-# DATA VALIDATION
+# IDENTIFY YEAR COLUMNS
+# =========================================================
+
+def find_year_columns(columns):
+    result = []
+
+    for col in columns:
+        match = re.fullmatch(
+            r"\s*((?:19|20)\d{2})\s*",
+            str(col)
+        )
+
+        if match:
+            year = int(match.group(1))
+
+            if 1900 <= year <= 2100:
+                result.append((col, year))
+
+    return sorted(result, key=lambda item: item[1])
+
+
+# =========================================================
+# VALIDATE TIME SERIES
 # =========================================================
 
 def validate_data(df):
-    required = {"Year", "Value"}
-
-    if not required.issubset(df.columns):
-        raise ValueError(
-            "The selected data must contain Year and Value columns."
-        )
-
     data = df[["Year", "Value"]].copy()
 
-    data["Year"] = pd.to_numeric(data["Year"], errors="coerce")
-    data["Value"] = pd.to_numeric(data["Value"], errors="coerce")
+    data["Year"] = pd.to_numeric(
+        data["Year"], errors="coerce"
+    )
+    data["Value"] = pd.to_numeric(
+        data["Value"], errors="coerce"
+    )
 
     data = data.dropna().sort_values("Year").reset_index(drop=True)
 
     if len(data) < 3:
         raise ValueError(
             "At least 3 valid annual observations are required. "
-            "Five to seven or more observations are preferable."
+            "Five to seven or more are preferable."
         )
 
     if not np.all(data["Year"] == np.floor(data["Year"])):
@@ -80,31 +108,37 @@ def validate_data(df):
 
     if data["Year"].duplicated().any():
         raise ValueError(
-            "Duplicate years found. Keep one observation per year."
+            "Duplicate years detected. Keep one value per year."
         )
 
     messages = []
 
-    expected = set(
-        range(int(data["Year"].min()), int(data["Year"].max()) + 1)
+    expected_years = set(
+        range(
+            int(data["Year"].min()),
+            int(data["Year"].max()) + 1
+        )
     )
-    missing = sorted(expected - set(data["Year"]))
 
-    if missing:
+    missing_years = sorted(
+        expected_years - set(data["Year"])
+    )
+
+    if missing_years:
         messages.append(
-            f"Missing years: {missing}. Check whether data are unavailable."
+            f"Missing years: {missing_years}. "
+            "Check whether observations are unavailable."
         )
 
     if (data["Value"] < 0).any():
         messages.append(
-            "Negative values detected. Confirm whether they are valid "
-            "for the selected indicator."
+            "Negative values found. Verify whether they are valid "
+            "for this indicator."
         )
 
     if (data["Value"] == 0).any():
         messages.append(
-            "Zero values detected. Some percentage-growth calculations "
-            "may be undefined."
+            "Zero values found. Some growth calculations may be undefined."
         )
 
     return data, messages
@@ -114,23 +148,25 @@ def validate_data(df):
 # FORECASTING MODELS
 # =========================================================
 
-def model_naive(y, horizon):
+def forecast_naive(y, horizon):
     return np.repeat(float(y.iloc[-1]), horizon)
 
 
-def model_moving_average(y, horizon):
+def forecast_moving_average(y, horizon):
     window = min(3, len(y))
-    level = float(y.tail(window).mean())
+    average = float(y.tail(window).mean())
 
-    return np.repeat(level, horizon)
+    return np.repeat(average, horizon)
 
 
-def model_cagr(y, horizon):
+def forecast_cagr(y, horizon):
     first = float(y.iloc[0])
     last = float(y.iloc[-1])
 
     if first <= 0 or last <= 0:
-        raise ValueError("CAGR requires positive first and last values.")
+        raise ValueError(
+            "CAGR requires positive first and last observations."
+        )
 
     rate = (last / first) ** (1 / (len(y) - 1)) - 1
 
@@ -140,7 +176,7 @@ def model_cagr(y, horizon):
     ])
 
 
-def model_linear_regression(y, horizon):
+def forecast_linear_regression(y, horizon):
     x = np.arange(len(y)).reshape(-1, 1)
 
     future_x = np.arange(
@@ -154,7 +190,7 @@ def model_linear_regression(y, horizon):
     return model.predict(future_x)
 
 
-def model_holt(y, horizon):
+def forecast_holt(y, horizon):
     if len(y) < 4:
         raise ValueError("Holt requires at least 4 observations.")
 
@@ -169,10 +205,7 @@ def model_holt(y, horizon):
     return np.asarray(model.forecast(horizon), dtype=float)
 
 
-def model_drift(y, horizon):
-    if len(y) < 2:
-        raise ValueError("Drift requires at least 2 observations.")
-
+def forecast_drift(y, horizon):
     average_change = (
         float(y.iloc[-1]) - float(y.iloc[0])
     ) / (len(y) - 1)
@@ -183,10 +216,10 @@ def model_drift(y, horizon):
     ])
 
 
-def model_arima(y, horizon):
+def forecast_arima(y, horizon):
     if len(y) < 8:
         raise ValueError(
-            "ARIMA is disabled for fewer than 8 observations."
+            "ARIMA is only attempted with at least 8 observations."
         )
 
     model = ARIMA(
@@ -198,13 +231,13 @@ def model_arima(y, horizon):
 
 
 MODELS = {
-    "Naive": model_naive,
-    "Moving average (3)": model_moving_average,
-    "CAGR": model_cagr,
-    "Linear regression": model_linear_regression,
-    "Holt damped trend": model_holt,
-    "Drift": model_drift,
-    "ARIMA (optional)": model_arima
+    "Naive": forecast_naive,
+    "Moving average (3)": forecast_moving_average,
+    "CAGR": forecast_cagr,
+    "Linear regression": forecast_linear_regression,
+    "Holt damped trend": forecast_holt,
+    "Drift": forecast_drift,
+    "ARIMA (optional)": forecast_arima
 }
 
 
@@ -212,7 +245,12 @@ MODELS = {
 # GENERATE FORECASTS
 # =========================================================
 
-def generate_forecasts(data, horizon, include_arima, non_negative):
+def generate_forecasts(
+    data,
+    horizon,
+    include_arima,
+    non_negative
+):
     y = data["Value"].astype(float).reset_index(drop=True)
 
     future_years = np.arange(
@@ -220,7 +258,7 @@ def generate_forecasts(data, horizon, include_arima, non_negative):
         int(data["Year"].max()) + horizon + 1
     )
 
-    forecasts = pd.DataFrame({"Year": future_years})
+    result = pd.DataFrame({"Year": future_years})
     status = {}
 
     for name, function in MODELS.items():
@@ -230,7 +268,8 @@ def generate_forecasts(data, horizon, include_arima, non_negative):
 
         try:
             values = np.asarray(
-                function(y, horizon), dtype=float
+                function(y, horizon),
+                dtype=float
             )
 
             if len(values) != horizon:
@@ -242,20 +281,25 @@ def generate_forecasts(data, horizon, include_arima, non_negative):
             if non_negative:
                 values = np.maximum(values, 0)
 
-            forecasts[name] = values
+            result[name] = values
             status[name] = "Available"
 
         except Exception as exc:
             status[name] = f"Unavailable: {exc}"
 
-    return forecasts, status
+    return result, status
 
 
 # =========================================================
 # HISTORICAL BACKTESTING
 # =========================================================
 
-def run_backtesting(data, include_arima, min_train=4):
+def run_backtesting(
+    data,
+    include_arima,
+    non_negative,
+    min_train=4
+):
     results = []
 
     for name, function in MODELS.items():
@@ -286,7 +330,8 @@ def run_backtesting(data, include_arima, min_train=4):
                 if not np.isfinite(predicted):
                     continue
 
-                predicted = max(0, predicted)
+                if non_negative:
+                    predicted = max(0, predicted)
 
                 errors.append(predicted - actual)
                 actuals.append(actual)
@@ -308,13 +353,13 @@ def run_backtesting(data, include_arima, min_train=4):
             results.append({
                 "Model": name,
                 "Test observations": len(errors),
-                "MAE": float(np.mean(absolute_errors)),
+                "MAE": np.mean(absolute_errors),
                 "WAPE (%)": (
-                    float(100 * np.sum(absolute_errors) / denominator)
-                    if denominator != 0 else np.nan
+                    100 * np.sum(absolute_errors) / denominator
+                    if denominator else np.nan
                 ),
-                "Bias": float(np.mean(errors)),
-                "Direction accuracy (%)": float(
+                "Bias": np.mean(errors),
+                "Direction accuracy (%)": (
                     100 * np.mean(direction_matches)
                 )
             })
@@ -338,9 +383,14 @@ def detect_anomalies(data, forecasts, threshold):
     flags = []
 
     history = data.copy()
-    history["Growth (%)"] = history["Value"].pct_change() * 100
+    history["Growth (%)"] = (
+        history["Value"].pct_change() * 100
+    )
 
-    for _, row in history.dropna(subset=["Growth (%)"]).iterrows():
+    # Historical changes
+    for _, row in history.dropna(
+        subset=["Growth (%)"]
+    ).iterrows():
 
         growth = float(row["Growth (%)"])
 
@@ -351,26 +401,25 @@ def detect_anomalies(data, forecasts, threshold):
                 "Model": "Actual",
                 "Value": float(row["Value"]),
                 "Growth (%)": growth,
-                "Reason": "Large annual change. Verify data and market context."
+                "Reason": (
+                    "Large annual change. Check the source and "
+                    "market context."
+                )
             })
 
+    # Forecast changes, including the latest actual-to-forecast change
     for model in [
         col for col in forecasts.columns if col != "Year"
     ]:
 
-        values = forecasts[model].to_numpy(dtype=float)
-
-        # Include the latest actual value to calculate the first
-        # forecast year's growth correctly.
-        values_with_actual = np.concatenate([
+        values = np.concatenate([
             [float(data["Value"].iloc[-1])],
-            values
+            forecasts[model].to_numpy(dtype=float)
         ])
 
-        for i in range(1, len(values_with_actual)):
-
-            previous = values_with_actual[i - 1]
-            current = values_with_actual[i]
+        for i in range(1, len(values)):
+            previous = values[i - 1]
+            current = values[i]
 
             if previous == 0:
                 continue
@@ -378,17 +427,15 @@ def detect_anomalies(data, forecasts, threshold):
             growth = (current / previous - 1) * 100
 
             if abs(growth) >= threshold:
-                forecast_year = int(
-                    data["Year"].max() + i
-                )
-
                 flags.append({
                     "Type": "Forecast warning",
-                    "Year": forecast_year,
+                    "Year": int(data["Year"].max() + i),
                     "Model": model,
                     "Value": float(current),
                     "Growth (%)": float(growth),
-                    "Reason": "Forecast change exceeds the selected threshold."
+                    "Reason": (
+                        "Projected change exceeds the selected threshold."
+                    )
                 })
 
     return pd.DataFrame(
@@ -401,11 +448,10 @@ def detect_anomalies(data, forecasts, threshold):
 
 
 # =========================================================
-# INDIVIDUAL MODEL CHART
+# MODEL CHART
 # =========================================================
 
 def draw_model_chart(data, forecasts, model, indicator, unit):
-
     fig = go.Figure()
 
     fig.add_trace(go.Scatter(
@@ -415,17 +461,19 @@ def draw_model_chart(data, forecasts, model, indicator, unit):
         name="Historical actuals"
     ))
 
-    chart_years = [
-        int(data["Year"].max())
-    ] + forecasts["Year"].astype(int).tolist()
+    years = (
+        [int(data["Year"].max())]
+        + forecasts["Year"].astype(int).tolist()
+    )
 
-    chart_values = [
-        float(data["Value"].iloc[-1])
-    ] + forecasts[model].astype(float).tolist()
+    values = (
+        [float(data["Value"].iloc[-1])]
+        + forecasts[model].astype(float).tolist()
+    )
 
     fig.add_trace(go.Scatter(
-        x=chart_years,
-        y=chart_values,
+        x=years,
+        y=values,
         mode="lines+markers",
         name=f"{model} forecast",
         line=dict(dash="dash")
@@ -442,26 +490,25 @@ def draw_model_chart(data, forecasts, model, indicator, unit):
         xaxis_title="Year",
         yaxis_title=unit,
         template="plotly_white",
-        hovermode="x unified",
-        legend=dict(orientation="h")
+        hovermode="x unified"
     )
 
     return fig
 
 
 # =========================================================
-# SIDEBAR
+# SIDEBAR SETTINGS
 # =========================================================
 
 st.sidebar.header("Forecast settings")
 
 uploaded_file = st.sidebar.file_uploader(
-    "Upload historical data",
+    "Upload historical Excel or CSV",
     type=["xlsx", "xls", "csv"]
 )
 
 use_sample = st.sidebar.checkbox(
-    "Use sample payments data",
+    "Use sample horizontal data",
     value=uploaded_file is None
 )
 
@@ -472,18 +519,17 @@ horizon = st.sidebar.selectbox(
 )
 
 include_arima = st.sidebar.checkbox(
-    "Include optional ARIMA model",
+    "Include optional ARIMA",
     value=False
 )
 
 non_negative = st.sidebar.checkbox(
     "Prevent negative forecasts",
-    value=True,
-    help="Recommended for counts, transaction values and other non-negative indicators."
+    value=True
 )
 
 threshold = st.sidebar.slider(
-    "Flag growth/decline above (%)",
+    "Flag annual growth/decline above (%)",
     min_value=5,
     max_value=100,
     value=20,
@@ -492,21 +538,20 @@ threshold = st.sidebar.slider(
 
 indicator = st.sidebar.text_input(
     "Indicator name",
-    "Debit cards in circulation"
+    "Debit cards"
 )
 
 unit = st.sidebar.text_input(
     "Measurement unit",
-    "Million cards"
+    "000s"
 )
 
 
 # =========================================================
-# LOAD INPUT DATA
+# LOAD HORIZONTAL EXCEL DATA
 # =========================================================
 
 try:
-
     if uploaded_file is not None:
 
         if uploaded_file.name.lower().endswith(".csv"):
@@ -514,62 +559,219 @@ try:
         else:
             raw_data = pd.read_excel(uploaded_file)
 
-        st.subheader("Uploaded data preview")
-        st.dataframe(
-            raw_data.head(20),
-            use_container_width=True,
-            hide_index=True
+    elif use_sample:
+        raw_data = get_sample_data()
+
+    else:
+        st.info("Upload a file or enable sample data.")
+        st.stop()
+
+    raw_data.columns = [
+        str(col).strip() for col in raw_data.columns
+    ]
+
+    st.subheader("Uploaded data preview")
+
+    st.dataframe(
+        raw_data,
+        use_container_width=True,
+        hide_index=True
+    )
+
+    year_pairs = find_year_columns(raw_data.columns)
+
+    # -----------------------------------------------
+    # HORIZONTAL FORMAT
+    # Indicator | Units | 2020 | 2021 | ...
+    # -----------------------------------------------
+
+    if len(year_pairs) >= 3:
+
+        st.success("Horizontal year-column format detected.")
+
+        year_columns = [col for col, year in year_pairs]
+
+        indicator_col = next(
+            (
+                col for col in raw_data.columns
+                if str(col).strip().lower()
+                in ["indicator", "indicators", "metric"]
+            ),
+            None
+        )
+
+        unit_col = next(
+            (
+                col for col in raw_data.columns
+                if str(col).strip().lower()
+                in ["unit", "units", "measurement unit"]
+            ),
+            None
+        )
+
+        country_col = next(
+            (
+                col for col in raw_data.columns
+                if str(col).strip().lower()
+                in ["country", "market", "geography"]
+            ),
+            None
+        )
+
+        working_data = raw_data.copy()
+
+        # Country selector if available
+        if country_col is not None:
+            countries = (
+                working_data[country_col]
+                .dropna()
+                .astype(str)
+                .unique()
+                .tolist()
+            )
+
+            selected_country = st.selectbox(
+                "Select country/market",
+                countries
+            )
+
+            working_data = working_data[
+                working_data[country_col].astype(str)
+                == selected_country
+            ]
+
+        # Indicator selector
+        if indicator_col is not None:
+
+            indicators = (
+                working_data[indicator_col]
+                .dropna()
+                .astype(str)
+                .unique()
+                .tolist()
+            )
+
+            if not indicators:
+                st.error("No indicators found in the selected data.")
+                st.stop()
+
+            selected_indicator = st.selectbox(
+                "Select indicator",
+                indicators
+            )
+
+            matching_rows = working_data[
+                working_data[indicator_col].astype(str)
+                == selected_indicator
+            ]
+
+            indicator = selected_indicator
+
+        else:
+            matching_rows = working_data
+
+        if matching_rows.empty:
+            st.error("No row matches the selected indicator.")
+            st.stop()
+
+        # Handle duplicate matching indicators
+        if len(matching_rows) > 1:
+
+            st.warning(
+                "Multiple rows match this selection. Choose the correct "
+                "row, particularly if the data contain subtypes."
+            )
+
+            row_choice = st.selectbox(
+                "Select the appropriate row",
+                range(len(matching_rows)),
+                format_func=lambda i: (
+                    f"Row {i + 1}: "
+                    + " | ".join(
+                        f"{col}={matching_rows.iloc[i][col]}"
+                        for col in matching_rows.columns
+                        if col not in year_columns
+                    )
+                )
+            )
+
+            selected_row = matching_rows.iloc[row_choice]
+
+        else:
+            selected_row = matching_rows.iloc[0]
+
+        # Automatically read units
+        if unit_col is not None and pd.notna(selected_row[unit_col]):
+            unit = str(selected_row[unit_col])
+
+        # Convert horizontal years into a time series internally
+        data = pd.DataFrame({
+            "Year": [year for col, year in year_pairs],
+            "Value": [
+                pd.to_numeric(
+                    pd.Series([selected_row[col]]),
+                    errors="coerce"
+                ).iloc[0]
+                for col, year in year_pairs
+            ]
+        })
+
+        data = data.dropna(subset=["Value"])
+
+    # -----------------------------------------------
+    # OPTIONAL LONG FORMAT SUPPORT
+    # -----------------------------------------------
+
+    else:
+        st.warning(
+            "No horizontal year columns were detected. "
+            "Check that your headings are years such as 2020, 2021, 2022."
         )
 
         columns = list(raw_data.columns)
 
         if len(columns) < 2:
-            st.error("Your file must have at least two columns.")
+            st.error("The file must contain at least two columns.")
             st.stop()
 
-        default_year_index = (
-            columns.index("Year") if "Year" in columns else 0
+        year_index = (
+            columns.index("Year")
+            if "Year" in columns else 0
         )
 
-        default_value_index = (
-            columns.index("Value") if "Value" in columns else 1
+        value_index = (
+            columns.index("Value")
+            if "Value" in columns else min(1, len(columns) - 1)
         )
 
         col1, col2 = st.columns(2)
 
         with col1:
-            year_column = st.selectbox(
+            year_col = st.selectbox(
                 "Select year column",
                 columns,
-                index=default_year_index
+                index=year_index
             )
 
         with col2:
-            value_column = st.selectbox(
-                "Select indicator value column",
+            value_col = st.selectbox(
+                "Select value column",
                 columns,
-                index=default_value_index
+                index=value_index
             )
 
-        if year_column == value_column:
-            st.error("Choose different columns for Year and Value.")
+        if year_col == value_col:
+            st.error("Choose different columns for year and value.")
             st.stop()
 
-        data = raw_data[[year_column, value_column]].rename(
-            columns={
-                year_column: "Year",
-                value_column: "Value"
-            }
-        )
+        data = raw_data[
+            [year_col, value_col]
+        ].rename(columns={
+            year_col: "Year",
+            value_col: "Value"
+        })
 
-    elif use_sample:
-        data = get_sample_data()
-
-    else:
-        st.info("Upload an Excel/CSV file or enable sample data.")
-        st.stop()
-
-    data, warnings_list = validate_data(data)
+    data, data_warnings = validate_data(data)
 
 except Exception as exc:
     st.error(f"Input error: {exc}")
@@ -577,27 +779,28 @@ except Exception as exc:
 
 
 # =========================================================
-# DISPLAY DATA WARNINGS
-# =========================================================
-
-for message in warnings_list:
-    st.warning(message)
-
-
-# =========================================================
 # HISTORICAL ANALYSIS
 # =========================================================
 
-st.header("1. Historical data analysis")
+for message in data_warnings:
+    st.warning(message)
+
+st.header("1. Historical analysis")
 
 history = data.copy()
-history["YoY growth (%)"] = history["Value"].pct_change() * 100
 
-latest_value = float(data["Value"].iloc[-1])
+history["YoY growth (%)"] = (
+    history["Value"].pct_change() * 100
+)
+
 latest_year = int(data["Year"].max())
+latest_value = float(data["Value"].iloc[-1])
 latest_growth = history["YoY growth (%)"].iloc[-1]
 
-if len(data) >= 2 and data["Value"].iloc[0] > 0 and latest_value > 0:
+if (
+    data["Value"].iloc[0] > 0
+    and latest_value > 0
+):
     historical_cagr = (
         (latest_value / float(data["Value"].iloc[0]))
         ** (1 / (len(data) - 1)) - 1
@@ -608,7 +811,7 @@ else:
 c1, c2, c3, c4 = st.columns(4)
 
 c1.metric("Latest year", latest_year)
-c2.metric("Latest value", f"{latest_value:,.3f}")
+c2.metric("Latest value", f"{latest_value:,.4f}")
 
 c3.metric(
     "Latest YoY growth",
@@ -628,27 +831,30 @@ st.dataframe(
     hide_index=True
 )
 
-historical_fig = go.Figure()
+historical_chart = go.Figure()
 
-historical_fig.add_trace(go.Scatter(
+historical_chart.add_trace(go.Scatter(
     x=data["Year"],
     y=data["Value"],
     mode="lines+markers",
     name="Actual values"
 ))
 
-historical_fig.update_layout(
+historical_chart.update_layout(
     title=f"{indicator} — historical trend",
     xaxis_title="Year",
     yaxis_title=unit,
     template="plotly_white"
 )
 
-st.plotly_chart(historical_fig, use_container_width=True)
+st.plotly_chart(
+    historical_chart,
+    use_container_width=True
+)
 
 
 # =========================================================
-# FORECAST TABLE
+# FORECAST COMPARISON
 # =========================================================
 
 st.header("2. Forecast comparison")
@@ -661,12 +867,12 @@ forecasts, model_status = generate_forecasts(
 )
 
 available_models = [
-    column for column in forecasts.columns
-    if column != "Year"
+    col for col in forecasts.columns
+    if col != "Year"
 ]
 
 if not available_models:
-    st.error("No models generated a valid forecast.")
+    st.error("No models generated usable forecasts.")
     st.json(model_status)
     st.stop()
 
@@ -676,13 +882,13 @@ st.dataframe(
     hide_index=True
 )
 
-with st.expander("Model availability and notes"):
-    for model_name, status in model_status.items():
-        st.write(f"**{model_name}:** {status}")
+with st.expander("Model status and assumptions"):
+    for name, status in model_status.items():
+        st.write(f"**{name}:** {status}")
 
 
 # =========================================================
-# SEPARATE CHART FOR EVERY MODEL
+# INDIVIDUAL MODEL CHARTS
 # =========================================================
 
 st.header("3. Individual model charts")
@@ -693,16 +899,14 @@ for model_name in available_models:
         f"View chart: {model_name}",
         expanded=True
     ):
-        fig = draw_model_chart(
-            data,
-            forecasts,
-            model_name,
-            indicator,
-            unit
-        )
-
         st.plotly_chart(
-            fig,
+            draw_model_chart(
+                data,
+                forecasts,
+                model_name,
+                indicator,
+                unit
+            ),
             use_container_width=True
         )
 
@@ -714,34 +918,23 @@ for model_name in available_models:
 st.header("4. Historical backtesting")
 
 st.caption(
-    "MAE and WAPE measure forecast error; lower is generally better. "
-    "Positive bias indicates overestimation. Direction accuracy measures "
-    "whether the model correctly predicts growth, decline or no change. "
-    "Results can be unreliable when few test observations are available."
+    "Lower MAE and WAPE generally indicate smaller errors. Positive bias "
+    "means overestimation. Rankings are uncertain with limited observations."
 )
 
 backtest_results = run_backtesting(
     data,
-    include_arima
+    include_arima,
+    non_negative
 )
 
 if backtest_results.empty:
-
-    st.warning(
-        "No models produced enough successful backtest predictions."
-    )
-
+    st.warning("No successful backtest results are available.")
 else:
-
     st.dataframe(
         backtest_results.round(3),
         use_container_width=True,
         hide_index=True
-    )
-
-    st.caption(
-        "Do not select a model solely because it ranks first. "
-        "Consider its assumptions, chart shape, market context and test count."
     )
 
 
@@ -752,32 +945,29 @@ else:
 st.header("5. Unusual-trend detection")
 
 st.caption(
-    f"Currently flags annual growth or decline of at least "
-    f"{threshold}%. This is a screening threshold, not a universal rule."
+    f"Flags annual changes of at least {threshold}%. "
+    "This threshold is configurable and not universal."
 )
 
-flags = detect_anomalies(
+anomalies = detect_anomalies(
     data,
     forecasts,
     threshold
 )
 
-if flags.empty:
-
+if anomalies.empty:
     st.success(
         "No changes exceeded the selected threshold. "
-        "This does not guarantee the forecast is correct."
+        "This does not guarantee that forecasts are correct."
     )
-
 else:
-
     st.warning(
-        "Review these warnings. A large change may be valid if supported "
-        "by a market event, regulatory change or source data."
+        "Review these warnings. Large changes may be valid when "
+        "supported by source data or known market developments."
     )
 
     st.dataframe(
-        flags.round(3),
+        anomalies.round(3),
         use_container_width=True,
         hide_index=True
     )
@@ -796,16 +986,16 @@ selected_model = st.selectbox(
 
 adjustment = st.number_input(
     "Optional analyst adjustment (%)",
-    min_value=-100.0 if non_negative else -1000.0,
+    min_value=-100.0,
     max_value=1000.0,
     value=0.0,
     step=1.0,
-    help="Use only when justified by secondary research or market knowledge."
+    help="Use an adjustment only when justified by research or market context."
 )
 
 reason = st.text_input(
     "Rationale for your selection",
-    "Reviewed historical trends, backtesting and market context."
+    "Reviewed historical trend, backtesting and market context."
 )
 
 selected_table = forecasts[
@@ -821,9 +1011,12 @@ selected_table["Working estimate"] = (
     * (1 + adjustment / 100)
 )
 
-selected_table["Rationale"] = reason
+if non_negative:
+    selected_table["Working estimate"] = (
+        selected_table["Working estimate"].clip(lower=0)
+    )
 
-st.subheader("Your selected forecast")
+selected_table["Rationale"] = reason
 
 st.dataframe(
     selected_table.round(4),
@@ -832,13 +1025,7 @@ st.dataframe(
 )
 
 st.caption(
-    "The adjustment changes the working estimate, not the original model "
-    "forecast. Forecasts are generated from the supplied history only and "
-    "do not automatically account for policy changes, inflation, instant "
-    "payment adoption or other external developments."
-)
-
-st.success(
-    "Forecast comparison complete. Review the model charts, validation "
-    "results and any warnings before choosing your final estimate."
+    "No Excel export is included. The models use the selected indicator's "
+    "historical values and do not automatically account for regulation, "
+    "inflation, instant-payment adoption or other external market events."
 )
